@@ -4,7 +4,11 @@ import os from 'os';
 import path from 'path';
 import { Api, Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN, TELEGRAM_BOT_POOL } from '../config.js';
+import {
+  ASSISTANT_NAME,
+  TRIGGER_PATTERN,
+  TELEGRAM_BOT_POOL,
+} from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { transcribeAudio } from '../transcription.js';
@@ -212,7 +216,13 @@ export class TelegramChannel implements Channel {
         'Unknown';
       const isGroup =
         ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
-      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+      this.opts.onChatMetadata(
+        chatJid,
+        timestamp,
+        undefined,
+        'telegram',
+        isGroup,
+      );
 
       let content = '[Voice message]';
       try {
@@ -226,10 +236,15 @@ export class TelegramChannel implements Channel {
 
         await new Promise<void>((resolve, reject) => {
           const out = fs.createWriteStream(tmpFile);
-          https.get(url, (res) => {
-            res.pipe(out);
-            out.on('finish', () => { out.close(); resolve(); });
-          }).on('error', reject);
+          https
+            .get(url, (res) => {
+              res.pipe(out);
+              out.on('finish', () => {
+                out.close();
+                resolve();
+              });
+            })
+            .on('error', reject);
         });
 
         const transcript = await transcribeAudio(tmpFile);
@@ -242,7 +257,10 @@ export class TelegramChannel implements Channel {
         // Clean up
         if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
       } catch (err) {
-        logger.error({ err, chatJid }, 'Failed to transcribe Telegram voice message');
+        logger.error(
+          { err, chatJid },
+          'Failed to transcribe Telegram voice message',
+        );
         content = '[Voice message - transcription failed]';
       }
 
@@ -437,7 +455,10 @@ export async function sendPoolMessage(
         'Assigned and renamed pool bot',
       );
     } catch (err) {
-      logger.warn({ sender, err }, 'Failed to rename pool bot (sending anyway)');
+      logger.warn(
+        { sender, err },
+        'Failed to rename pool bot (sending anyway)',
+      );
     }
   }
 

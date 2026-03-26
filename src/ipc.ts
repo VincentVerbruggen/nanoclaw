@@ -81,10 +81,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  if (
-                    data.sender &&
-                    data.chatJid.startsWith('tg:')
-                  ) {
+                  if (data.sender && data.chatJid.startsWith('tg:')) {
                     await sendPoolMessage(
                       data.chatJid,
                       data.text,
