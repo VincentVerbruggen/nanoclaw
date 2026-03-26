@@ -1,9 +1,13 @@
+import fs from 'fs';
 import https from 'https';
+import os from 'os';
+import path from 'path';
 import { Api, Bot } from 'grammy';
 
-import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { ASSISTANT_NAME, TRIGGER_PATTERN, TELEGRAM_BOT_POOL } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { transcribeAudio } from '../transcription.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -195,7 +199,63 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message:photo', (ctx) => storeNonText(ctx, '[Photo]'));
     this.bot.on('message:video', (ctx) => storeNonText(ctx, '[Video]'));
-    this.bot.on('message:voice', (ctx) => storeNonText(ctx, '[Voice message]'));
+    this.bot.on('message:voice', async (ctx) => {
+      const chatJid = `tg:${ctx.chat.id}`;
+      const group = this.opts.registeredGroups()[chatJid];
+      if (!group) return;
+
+      const timestamp = new Date(ctx.message.date * 1000).toISOString();
+      const senderName =
+        ctx.from?.first_name ||
+        ctx.from?.username ||
+        ctx.from?.id?.toString() ||
+        'Unknown';
+      const isGroup =
+        ctx.chat.type === 'group' || ctx.chat.type === 'supergroup';
+      this.opts.onChatMetadata(chatJid, timestamp, undefined, 'telegram', isGroup);
+
+      let content = '[Voice message]';
+      try {
+        const file = await ctx.getFile();
+        const url = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
+
+        // Download to temp file
+        const tmpDir = os.tmpdir();
+        const ext = path.extname(file.file_path || '') || '.oga';
+        const tmpFile = path.join(tmpDir, `tg-voice-${Date.now()}${ext}`);
+
+        await new Promise<void>((resolve, reject) => {
+          const out = fs.createWriteStream(tmpFile);
+          https.get(url, (res) => {
+            res.pipe(out);
+            out.on('finish', () => { out.close(); resolve(); });
+          }).on('error', reject);
+        });
+
+        const transcript = await transcribeAudio(tmpFile);
+        if (transcript) {
+          content = `[Voice: ${transcript}]`;
+        } else {
+          content = '[Voice message - transcription unavailable]';
+        }
+
+        // Clean up
+        if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+      } catch (err) {
+        logger.error({ err, chatJid }, 'Failed to transcribe Telegram voice message');
+        content = '[Voice message - transcription failed]';
+      }
+
+      this.opts.onMessage(chatJid, {
+        id: ctx.message.message_id.toString(),
+        chat_jid: chatJid,
+        sender: ctx.from?.id?.toString() || '',
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+      });
+    });
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
     this.bot.on('message:document', (ctx) => {
       const name = ctx.message.document?.file_name || 'file';
@@ -275,14 +335,129 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  async setTyping(jid: string, isTyping: boolean): Promise<void> {
-    if (!this.bot || !isTyping) return;
-    try {
-      const numericId = jid.replace(/^tg:/, '');
-      await this.bot.api.sendChatAction(numericId, 'typing');
-    } catch (err) {
-      logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
+  private typingIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  private typingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+
+  private clearTyping(jid: string): void {
+    const interval = this.typingIntervals.get(jid);
+    if (interval) {
+      clearInterval(interval);
+      this.typingIntervals.delete(jid);
     }
+    const timeout = this.typingTimeouts.get(jid);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.typingTimeouts.delete(jid);
+    }
+  }
+
+  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+    if (!this.bot) return;
+
+    if (!isTyping) {
+      this.clearTyping(jid);
+      return;
+    }
+
+    // Reset: clear any existing interval/timeout and start fresh.
+    // This allows callers to "bump" the typing indicator on each agent output.
+    this.clearTyping(jid);
+
+    const numericId = jid.replace(/^tg:/, '');
+    const sendTyping = () => {
+      this.bot?.api.sendChatAction(numericId, 'typing').catch((err) => {
+        logger.debug({ jid, err }, 'Failed to send Telegram typing indicator');
+      });
+    };
+
+    // Send immediately, then every 4 seconds (Telegram expires after ~5s)
+    sendTyping();
+    this.typingIntervals.set(jid, setInterval(sendTyping, 4000));
+
+    // Auto-stop after 30 seconds
+    this.typingTimeouts.set(
+      jid,
+      setTimeout(() => this.clearTyping(jid), 30000),
+    );
+  }
+}
+
+// Bot pool for agent teams: send-only Api instances (no polling)
+const poolApis: Api[] = [];
+// Maps "{groupFolder}:{senderName}" → pool Api index for stable assignment
+const senderBotMap = new Map<string, number>();
+let nextPoolIndex = 0;
+
+/**
+ * Initialize send-only Api instances for the bot pool.
+ */
+export async function initBotPool(tokens: string[]): Promise<void> {
+  for (const token of tokens) {
+    try {
+      const api = new Api(token);
+      const me = await api.getMe();
+      poolApis.push(api);
+      logger.info(
+        { username: me.username, id: me.id, poolSize: poolApis.length },
+        'Pool bot initialized',
+      );
+    } catch (err) {
+      logger.error({ err }, 'Failed to initialize pool bot');
+    }
+  }
+  if (poolApis.length > 0) {
+    logger.info({ count: poolApis.length }, 'Telegram bot pool ready');
+  }
+}
+
+/**
+ * Send a message via a pool bot assigned to the given sender name.
+ * Assigns bots round-robin on first use; subsequent messages from the
+ * same sender in the same group always use the same bot.
+ */
+export async function sendPoolMessage(
+  chatId: string,
+  text: string,
+  sender: string,
+  groupFolder: string,
+): Promise<void> {
+  if (poolApis.length === 0) return;
+
+  const key = `${groupFolder}:${sender}`;
+  let idx = senderBotMap.get(key);
+  if (idx === undefined) {
+    idx = nextPoolIndex % poolApis.length;
+    nextPoolIndex++;
+    senderBotMap.set(key, idx);
+    try {
+      await poolApis[idx].setMyName(sender);
+      await new Promise((r) => setTimeout(r, 2000));
+      logger.info(
+        { sender, groupFolder, poolIndex: idx },
+        'Assigned and renamed pool bot',
+      );
+    } catch (err) {
+      logger.warn({ sender, err }, 'Failed to rename pool bot (sending anyway)');
+    }
+  }
+
+  const api = poolApis[idx];
+  try {
+    const numericId = chatId.replace(/^tg:/, '');
+    const MAX_LENGTH = 4096;
+    if (text.length <= MAX_LENGTH) {
+      await api.sendMessage(numericId, text);
+    } else {
+      for (let i = 0; i < text.length; i += MAX_LENGTH) {
+        await api.sendMessage(numericId, text.slice(i, i + MAX_LENGTH));
+      }
+    }
+    logger.info(
+      { chatId, sender, poolIndex: idx, length: text.length },
+      'Pool message sent',
+    );
+  } catch (err) {
+    logger.error({ chatId, sender, err }, 'Failed to send pool message');
   }
 }
 
