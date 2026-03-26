@@ -13,6 +13,7 @@ import {
   POLL_INTERVAL,
   TELEGRAM_BOT_POOL,
   TIMEZONE,
+  TRIGGER_PATTERN,
 } from './config.js';
 import { initBotPool } from './channels/telegram.js';
 import './channels/index.js';
