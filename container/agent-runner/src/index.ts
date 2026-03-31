@@ -551,7 +551,9 @@ async function main(): Promise<void> {
   try { fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL); } catch { /* ignore */ }
 
   // Build initial prompt (drain any pending IPC messages too)
-  let prompt = containerInput.prompt;
+  // Check for [COMPACT_AFTER] directive — run prompt then auto-compact
+  const compactAfter = containerInput.prompt.includes('[COMPACT_AFTER]');
+  let prompt = containerInput.prompt.replace('[COMPACT_AFTER]', '').trim();
   if (containerInput.isScheduledTask) {
     prompt = `[SCHEDULED TASK - The following message was sent automatically and is not coming directly from the user or group.]\n\n${prompt}`;
   }
@@ -584,8 +586,9 @@ async function main(): Promise<void> {
   // --- Slash command handling ---
   // Only known session slash commands are handled here. This prevents
   // accidental interception of user prompts that happen to start with '/'.
+  // Check the original prompt (not the prefixed one) for scheduled tasks.
   const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
-  const trimmedPrompt = prompt.trim();
+  const trimmedPrompt = containerInput.prompt.trim();
   const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
 
   if (isSessionSlashCommand) {
@@ -728,6 +731,46 @@ async function main(): Promise<void> {
       error: errorMessage
     });
     process.exit(1);
+  }
+
+  // Phase 2: auto-compact after the main prompt completes
+  if (compactAfter && sessionId) {
+    log('Running post-task /compact...');
+    try {
+      let compactSessionId: string | undefined;
+      for await (const message of query({
+        prompt: '/compact',
+        options: {
+          cwd: '/workspace/group',
+          resume: sessionId,
+          systemPrompt: undefined,
+          allowedTools: [],
+          env: sdkEnv,
+          permissionMode: 'bypassPermissions' as const,
+          allowDangerouslySkipPermissions: true,
+          settingSources: ['project', 'user'] as const,
+          hooks: {
+            PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+          },
+        },
+      })) {
+        if (message.type === 'system' && message.subtype === 'init') {
+          compactSessionId = message.session_id;
+        }
+        if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+          log('Post-task compact completed');
+        }
+        if (message.type === 'result') {
+          writeOutput({
+            status: 'success',
+            result: null,
+            newSessionId: compactSessionId,
+          });
+        }
+      }
+    } catch (err) {
+      log(`Post-task compact error: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 }
 

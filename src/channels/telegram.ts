@@ -50,15 +50,26 @@ async function sendTelegramMessage(
 }
 
 export class TelegramChannel implements Channel {
-  name = 'telegram';
+  name: string;
 
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;
   private botToken: string;
+  /** If set, this bot only handles these JIDs. If empty, handles all tg: JIDs. */
+  private allowedJids: Set<string>;
+  /** JIDs claimed by dedicated bots — the main bot skips these. */
+  private excludedJids: Set<string>;
 
-  constructor(botToken: string, opts: TelegramChannelOpts) {
+  constructor(
+    botToken: string,
+    opts: TelegramChannelOpts,
+    options?: { name?: string; allowedJids?: string[]; excludedJids?: string[] },
+  ) {
     this.botToken = botToken;
     this.opts = opts;
+    this.name = options?.name || 'telegram';
+    this.allowedJids = new Set(options?.allowedJids || []);
+    this.excludedJids = new Set(options?.excludedJids || []);
   }
 
   async connect(): Promise<void> {
@@ -89,8 +100,8 @@ export class TelegramChannel implements Channel {
     });
 
     this.bot.on('message:text', async (ctx) => {
-      // Skip commands
-      if (ctx.message.text.startsWith('/')) return;
+      // Skip Telegram bot commands handled above (chatid, ping) — let all others through
+      if (ctx.message.text.startsWith('/chatid') || ctx.message.text.startsWith('/ping')) return;
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;
@@ -342,7 +353,12 @@ export class TelegramChannel implements Channel {
   }
 
   ownsJid(jid: string): boolean {
-    return jid.startsWith('tg:');
+    if (!jid.startsWith('tg:')) return false;
+    // Dedicated bot: only owns its specific JIDs
+    if (this.allowedJids.size > 0) return this.allowedJids.has(jid);
+    // Main bot: skip JIDs handled by dedicated bots
+    if (this.excludedJids.has(jid)) return false;
+    return true;
   }
 
   async disconnect(): Promise<void> {
@@ -482,13 +498,73 @@ export async function sendPoolMessage(
   }
 }
 
+/**
+ * Parse TELEGRAM_DEDICATED_BOTS from env.
+ * Format: "token1:jid1,jid2;token2:jid3" — semicolon-separated bot entries.
+ */
+function parseDedicatedBots(
+  raw: string,
+): Array<{ token: string; jids: string[] }> {
+  if (!raw) return [];
+  return raw
+    .split(';')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [token, ...jidParts] = entry.split(':');
+      // Token has a colon in it (id:hash), so rejoin properly
+      // Format is actually "id:hash:jid1,jid2"
+      const tokenPart = `${token}:${jidParts[0]}`;
+      const jidsPart = jidParts.slice(1).join(':');
+      return {
+        token: tokenPart,
+        jids: jidsPart
+          .split(',')
+          .map((j) => j.trim())
+          .filter(Boolean),
+      };
+    })
+    .filter((b) => b.token && b.jids.length > 0);
+}
+
 registerChannel('telegram', (opts: ChannelOpts) => {
-  const envVars = readEnvFile(['TELEGRAM_BOT_TOKEN']);
+  const envVars = readEnvFile([
+    'TELEGRAM_BOT_TOKEN',
+    'TELEGRAM_DEDICATED_BOTS',
+  ]);
   const token =
     process.env.TELEGRAM_BOT_TOKEN || envVars.TELEGRAM_BOT_TOKEN || '';
   if (!token) {
     logger.warn('Telegram: TELEGRAM_BOT_TOKEN not set');
     return null;
   }
-  return new TelegramChannel(token, opts);
+
+  // Parse dedicated bots and collect their JIDs so the main bot skips them
+  const dedicatedRaw =
+    process.env.TELEGRAM_DEDICATED_BOTS ||
+    envVars.TELEGRAM_DEDICATED_BOTS ||
+    '';
+  const dedicatedBots = parseDedicatedBots(dedicatedRaw);
+  const excludedJids = dedicatedBots.flatMap((b) => b.jids);
+
+  return new TelegramChannel(token, opts, { excludedJids });
+});
+
+// Register each dedicated bot as a separate channel
+registerChannel('telegram-dedicated', (opts: ChannelOpts) => {
+  const envVars = readEnvFile(['TELEGRAM_DEDICATED_BOTS']);
+  const dedicatedRaw =
+    process.env.TELEGRAM_DEDICATED_BOTS ||
+    envVars.TELEGRAM_DEDICATED_BOTS ||
+    '';
+  const dedicatedBots = parseDedicatedBots(dedicatedRaw);
+  if (dedicatedBots.length === 0) return null;
+
+  // For now, return the first dedicated bot. If multiple are needed,
+  // this can be extended to register each separately.
+  const bot = dedicatedBots[0];
+  return new TelegramChannel(bot.token, opts, {
+    name: 'telegram-dedicated',
+    allowedJids: bot.jids,
+  });
 });

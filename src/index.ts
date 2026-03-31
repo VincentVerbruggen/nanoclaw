@@ -623,10 +623,21 @@ async function main(): Promise<void> {
     msg: NewMessage,
   ): Promise<void> {
     const group = registeredGroups[chatJid];
-    if (!group?.isMain) {
+    if (!group) return;
+
+    // Remote control grants host-level access — restrict to main group
+    // or the message sender matching the main group's DM user.
+    const mainJids = Object.entries(registeredGroups)
+      .filter(([, g]) => g.isMain)
+      .map(([jid]) => jid);
+    const mainUserId = mainJids
+      .map((jid) => jid.replace(/^tg:/, ''))
+      .find(Boolean);
+
+    if (!group.isMain && msg.sender !== mainUserId) {
       logger.warn(
         { chatJid, sender: msg.sender },
-        'Remote control rejected: not main group',
+        'Remote control rejected: sender is not the main user',
       );
       return;
     }

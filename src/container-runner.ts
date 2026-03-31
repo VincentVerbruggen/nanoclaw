@@ -25,6 +25,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
+import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -234,8 +235,8 @@ async function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
-  // OneCLI gateway handles credential injection — containers never see real secrets.
-  // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
+  // Try OneCLI gateway first for credential injection.
+  // Falls back to direct .env injection if OneCLI isn't available.
   const onecliApplied = await onecli.applyContainerConfig(args, {
     addHostMapping: false, // Nanoclaw already handles host gateway
     agent: agentIdentifier,
@@ -243,10 +244,30 @@ async function buildContainerArgs(
   if (onecliApplied) {
     logger.info({ containerName }, 'OneCLI gateway config applied');
   } else {
-    logger.warn(
-      { containerName },
-      'OneCLI gateway not reachable — container will have no credentials',
-    );
+    // Fallback: inject credentials directly from .env
+    const envCreds = readEnvFile([
+      'ANTHROPIC_API_KEY',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+    ]);
+    const apiKey =
+      process.env.ANTHROPIC_API_KEY || envCreds.ANTHROPIC_API_KEY;
+    const oauthToken =
+      process.env.CLAUDE_CODE_OAUTH_TOKEN || envCreds.CLAUDE_CODE_OAUTH_TOKEN;
+    if (apiKey) {
+      args.push('-e', `ANTHROPIC_API_KEY=${apiKey}`);
+      logger.info({ containerName }, 'Injected ANTHROPIC_API_KEY from .env');
+    } else if (oauthToken) {
+      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`);
+      logger.info(
+        { containerName },
+        'Injected CLAUDE_CODE_OAUTH_TOKEN from .env',
+      );
+    } else {
+      logger.warn(
+        { containerName },
+        'No credentials available — OneCLI unreachable and no API key or OAuth token in .env',
+      );
+    }
   }
 
   // Runtime-specific args for host gateway resolution
