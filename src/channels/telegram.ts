@@ -63,7 +63,11 @@ export class TelegramChannel implements Channel {
   constructor(
     botToken: string,
     opts: TelegramChannelOpts,
-    options?: { name?: string; allowedJids?: string[]; excludedJids?: string[] },
+    options?: {
+      name?: string;
+      allowedJids?: string[];
+      excludedJids?: string[];
+    },
   ) {
     this.botToken = botToken;
     this.opts = opts;
@@ -101,7 +105,11 @@ export class TelegramChannel implements Channel {
 
     this.bot.on('message:text', async (ctx) => {
       // Skip Telegram bot commands handled above (chatid, ping) — let all others through
-      if (ctx.message.text.startsWith('/chatid') || ctx.message.text.startsWith('/ping')) return;
+      if (
+        ctx.message.text.startsWith('/chatid') ||
+        ctx.message.text.startsWith('/ping')
+      )
+        return;
 
       const chatJid = `tg:${ctx.chat.id}`;
       let content = ctx.message.text;

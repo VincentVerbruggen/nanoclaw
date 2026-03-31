@@ -249,8 +249,7 @@ async function buildContainerArgs(
       'ANTHROPIC_API_KEY',
       'CLAUDE_CODE_OAUTH_TOKEN',
     ]);
-    const apiKey =
-      process.env.ANTHROPIC_API_KEY || envCreds.ANTHROPIC_API_KEY;
+    const apiKey = process.env.ANTHROPIC_API_KEY || envCreds.ANTHROPIC_API_KEY;
     const oauthToken =
       process.env.CLAUDE_CODE_OAUTH_TOKEN || envCreds.CLAUDE_CODE_OAUTH_TOKEN;
     if (apiKey) {
