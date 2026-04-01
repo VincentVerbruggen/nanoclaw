@@ -558,21 +558,22 @@ registerChannel('telegram', (opts: ChannelOpts) => {
   return new TelegramChannel(token, opts, { excludedJids });
 });
 
-// Register each dedicated bot as a separate channel
-registerChannel('telegram-dedicated', (opts: ChannelOpts) => {
+// Register each dedicated bot as a separate channel.
+// Parse once at module load so we know how many to register.
+{
   const envVars = readEnvFile(['TELEGRAM_DEDICATED_BOTS']);
   const dedicatedRaw =
     process.env.TELEGRAM_DEDICATED_BOTS ||
     envVars.TELEGRAM_DEDICATED_BOTS ||
     '';
   const dedicatedBots = parseDedicatedBots(dedicatedRaw);
-  if (dedicatedBots.length === 0) return null;
-
-  // For now, return the first dedicated bot. If multiple are needed,
-  // this can be extended to register each separately.
-  const bot = dedicatedBots[0];
-  return new TelegramChannel(bot.token, opts, {
-    name: 'telegram-dedicated',
-    allowedJids: bot.jids,
+  dedicatedBots.forEach((bot, i) => {
+    const name = i === 0 ? 'telegram-dedicated' : `telegram-dedicated-${i}`;
+    registerChannel(name, (opts: ChannelOpts) => {
+      return new TelegramChannel(bot.token, opts, {
+        name,
+        allowedJids: bot.jids,
+      });
+    });
   });
-});
+}

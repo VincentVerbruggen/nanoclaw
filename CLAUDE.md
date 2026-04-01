@@ -71,6 +71,78 @@ systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
 
+## Adding a Dedicated Telegram Bot + Group
+
+Step-by-step guide for adding a new dedicated bot that handles a specific Telegram group.
+
+### 1. Create the bot in @BotFather
+
+- `/newbot` → choose name and username
+- Copy the bot token
+- **CRITICAL:** Go to **Bot Settings → Group Privacy → Turn off**. Without this, the bot can only see commands and replies to its own messages — not regular chat messages.
+
+### 2. Get the chat ID
+
+- Create a Telegram group and add the bot
+- Send `/start` in the group
+- Fetch updates: `curl "https://api.telegram.org/bot<TOKEN>/getUpdates?offset=-1&limit=1"` — if empty (another process polling), check `getWebhookInfo` for `pending_update_count` and retry with negative offset
+- Note the chat ID (negative number for groups, e.g. `-5138473688`)
+- The JID format is `tg:<chat_id>` (e.g. `tg:-5138473688`)
+
+### 3. Add to `.env`
+
+Append the bot to `TELEGRAM_DEDICATED_BOTS` (semicolon-separated entries, format: `token:jid1,jid2`):
+
+```
+TELEGRAM_DEDICATED_BOTS=existing_entry;NEW_TOKEN:tg:CHAT_ID
+```
+
+### 4. Create the group folder and CLAUDE.md
+
+```bash
+mkdir -p groups/<folder_name>
+# Write a CLAUDE.md with the bot's persona/instructions
+```
+
+### 5. Register the group in the DB
+
+```bash
+sqlite3 store/messages.db "INSERT OR REPLACE INTO registered_groups \
+  (jid, name, folder, trigger_pattern, added_at, requires_trigger, is_main) \
+  VALUES ('tg:CHAT_ID', 'Group Name', 'folder_name', '@Andy', datetime('now'), 0, 0);"
+```
+
+Set `requires_trigger = 0` if the bot should respond to every message (no @mention needed).
+
+### 6. Build and restart
+
+```bash
+npm run build
+launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+```
+
+### 7. Verify
+
+- Check logs: `grep "Telegram bot connected" logs/nanoclaw.log | tail -5` — count should match (1 main + N dedicated)
+- Send a message in the group and check: `grep "message stored" logs/nanoclaw.log | tail -5`
+
+### Common pitfalls
+
+- **Bot privacy mode ON (default):** The #1 issue. Bot won't see regular messages, only `/commands` and replies. Must disable via @BotFather and then remove+re-add the bot to existing groups.
+- **Supergroup migration:** Telegram may change the group chat ID when it migrates to a supergroup. If messages stop arriving, check the actual chat ID via `/chatid` command or `getUpdates` and update both `.env` and `registered_groups` DB.
+- **Multiple dedicated bots:** The code in `src/channels/telegram.ts` registers each bot from `TELEGRAM_DEDICATED_BOTS` as a separate channel (`telegram-dedicated`, `telegram-dedicated-1`, etc.).
+- **DB location:** The database is at `store/messages.db` (not `data/nanoclaw.db`).
+
+## Current Dedicated Bot Setup
+
+| Group | JID | Folder | Bot |
+|-------|-----|--------|-----|
+| Vincent (private) | `tg:8308007259` | `telegram_main` | Main bot |
+| Vincent & Career Coach | `tg:-5138473688` | `telegram_career_coach` | @PoekysCareerCoachBot |
+| Vincent & Coworker | `tg:-5217564880` | `telegram_coworker` | @PoekysCoworkerBot |
+| Diet Coach | `tg:-5153086066` | `telegram_diet` | @PoekysDietCoachBot |
+| Swarm | `tg:-5224268853` | `telegram_swarm` | Main bot |
+
 ## Troubleshooting
 
 **WhatsApp not connecting after upgrade:** WhatsApp is now a separate skill, not bundled in core. Run `/add-whatsapp` (or `npx tsx scripts/apply-skill.ts .claude/skills/add-whatsapp && npm run build`) to install it. Existing auth credentials and groups are preserved.
