@@ -469,6 +469,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__nanoclaw__*',
+        'mcp__atlassian__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -484,6 +485,19 @@ async function runQuery(
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
           },
         },
+        ...(process.env.JIRA_URL
+          ? {
+              atlassian: {
+                command: 'uvx',
+                args: ['mcp-atlassian'],
+                env: {
+                  JIRA_URL: process.env.JIRA_URL,
+                  JIRA_USERNAME: process.env.JIRA_USERNAME ?? '',
+                  JIRA_API_TOKEN: process.env.JIRA_API_TOKEN ?? '',
+                },
+              },
+            }
+          : {}),
       },
       hooks: {
         PreCompact: [

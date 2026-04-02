@@ -76,19 +76,24 @@ async function main() {
   }
 
   const jsonlFiles: string[] = [];
+
+  function collectJsonl(dir: string, relBase: string) {
+    for (const entry of fs.readdirSync(dir)) {
+      const full = path.join(dir, entry);
+      const rel = path.join(relBase, entry);
+      if (fs.statSync(full).isDirectory()) {
+        collectJsonl(full, rel);
+      } else if (entry.endsWith('.jsonl')) {
+        jsonlFiles.push(rel);
+      }
+    }
+  }
+
   if (fs.existsSync(SESSIONS_DIR)) {
     for (const group of fs.readdirSync(SESSIONS_DIR)) {
       const projectsDir = path.join(SESSIONS_DIR, group, '.claude', 'projects');
       if (!fs.existsSync(projectsDir)) continue;
-      for (const project of fs.readdirSync(projectsDir)) {
-        const projectPath = path.join(projectsDir, project);
-        if (!fs.statSync(projectPath).isDirectory()) continue;
-        for (const file of fs.readdirSync(projectPath)) {
-          if (file.endsWith('.jsonl')) {
-            jsonlFiles.push(path.join(group, '.claude', 'projects', project, file));
-          }
-        }
-      }
+      collectJsonl(projectsDir, path.join(group, '.claude', 'projects'));
     }
   }
 
@@ -101,7 +106,7 @@ async function main() {
   const totalStats = newStats();
 
   for (const file of jsonlFiles) {
-    const groupFolder = file.split('/')[0];
+    const groupFolder = file.split(path.sep)[0];
     if (!groupStats[groupFolder]) groupStats[groupFolder] = newStats();
     const stats = groupStats[groupFolder];
 

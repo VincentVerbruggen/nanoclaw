@@ -15,7 +15,7 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   OLLAMA_ADMIN_TOOLS,
-  ONECLI_URL,
+  STORE_DIR,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -27,12 +27,38 @@ import {
   readonlyMountArgs,
   stopContainer,
 } from './container-runtime.js';
-import { OneCLI } from '@onecli-sh/sdk';
+import { detectAuthMode } from './credential-proxy.js';
 import { readEnvFile } from './env.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
-const onecli = new OneCLI({ url: ONECLI_URL });
+/**
+ * Read group-specific env vars from store/group-envs/<folder>.env on the host.
+ * This file is never mounted into containers — only injected as -e flags.
+ */
+function readGroupEnvFile(folder: string): Record<string, string> {
+  const envPath = path.join(STORE_DIR, 'group-envs', `${folder}.env`);
+  if (!fs.existsSync(envPath)) return {};
+  const content = fs.readFileSync(envPath, 'utf-8');
+  const result: Record<string, string> = {};
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    let value = trimmed.slice(eqIdx + 1).trim();
+    if (
+      value.length >= 2 &&
+      ((value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'")))
+    ) {
+      value = value.slice(1, -1);
+    }
+    if (key && value) result[key] = value;
+  }
+  return result;
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -219,12 +245,12 @@ function buildVolumeMounts(
   return mounts;
 }
 
-async function buildContainerArgs(
+function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   isMain: boolean,
-  agentIdentifier?: string,
-): Promise<string[]> {
+  groupFolder: string,
+): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
@@ -235,38 +261,23 @@ async function buildContainerArgs(
     args.push('-e', 'OLLAMA_ADMIN_TOOLS=true');
   }
 
-  // OneCLI gateway handles credential injection — containers never see real secrets.
-  // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
-  const onecliApplied = await onecli.applyContainerConfig(args, {
-    addHostMapping: false, // Nanoclaw already handles host gateway
-    agent: agentIdentifier,
-  });
-  if (onecliApplied) {
-    logger.info({ containerName }, 'OneCLI gateway config applied');
+  // Inject group-specific env vars from store/group-envs/<folder>.env (host-only file)
+  const groupEnv = readGroupEnvFile(groupFolder);
+  for (const [key, value] of Object.entries(groupEnv)) {
+    args.push('-e', `${key}=${value}`);
+  }
+
+  // Route Anthropic API traffic through the credential proxy.
+  // The proxy injects the real API key/OAuth token so containers never see them.
+  args.push(
+    '-e',
+    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+  );
+  const authMode = detectAuthMode();
+  if (authMode === 'api-key') {
+    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
-    // Fallback: inject credentials directly from .env
-    const envCreds = readEnvFile([
-      'ANTHROPIC_API_KEY',
-      'CLAUDE_CODE_OAUTH_TOKEN',
-    ]);
-    const apiKey = process.env.ANTHROPIC_API_KEY || envCreds.ANTHROPIC_API_KEY;
-    const oauthToken =
-      process.env.CLAUDE_CODE_OAUTH_TOKEN || envCreds.CLAUDE_CODE_OAUTH_TOKEN;
-    if (apiKey) {
-      args.push('-e', `ANTHROPIC_API_KEY=${apiKey}`);
-      logger.info({ containerName }, 'Injected ANTHROPIC_API_KEY from .env');
-    } else if (oauthToken) {
-      args.push('-e', `CLAUDE_CODE_OAUTH_TOKEN=${oauthToken}`);
-      logger.info(
-        { containerName },
-        'Injected CLAUDE_CODE_OAUTH_TOKEN from .env',
-      );
-    } else {
-      logger.warn(
-        { containerName },
-        'No credentials available — OneCLI unreachable and no API key or OAuth token in .env',
-      );
-    }
+    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
   // Runtime-specific args for host gateway resolution
@@ -316,15 +327,11 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  // Main group uses the default OneCLI agent; others use their own agent.
-  const agentIdentifier = input.isMain
-    ? undefined
-    : group.folder.toLowerCase().replace(/_/g, '-');
-  const containerArgs = await buildContainerArgs(
+  const containerArgs = buildContainerArgs(
     mounts,
     containerName,
     input.isMain,
-    agentIdentifier,
+    group.folder,
   );
 
   logger.debug(
