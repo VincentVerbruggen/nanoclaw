@@ -85,7 +85,6 @@ let messageLoopRunning = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
-
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
   const agentTs = getRouterState('last_agent_timestamp');
@@ -333,7 +332,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
     });
   } catch (err) {
-    logger.debug({ group: group.name, err }, 'Could not set up typing heartbeat watcher');
+    logger.debug(
+      { group: group.name, err },
+      'Could not set up typing heartbeat watcher',
+    );
   }
 
   const output = await runAgent(group, prompt, chatJid, async (result) => {
@@ -556,12 +558,7 @@ async function startMessageLoop(): Promise<void> {
             // Only close active container if the sender is authorized — otherwise an
             // untrusted user could kill in-flight work by sending /compact (DoS).
             // closeStdin no-ops internally when no container is active.
-            if (
-              isSessionCommandAllowed(
-                isMainGroup,
-                !!loopCmdMsg.is_from_me,
-              )
-            ) {
+            if (isSessionCommandAllowed(isMainGroup, !!loopCmdMsg.is_from_me)) {
               queue.closeStdin(chatJid);
             }
             // Enqueue so processGroupMessages handles auth + cursor advancement.
