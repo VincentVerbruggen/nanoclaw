@@ -59,6 +59,8 @@ export class TelegramChannel implements Channel {
   private allowedJids: Set<string>;
   /** JIDs claimed by dedicated bots — the main bot skips these. */
   private excludedJids: Set<string>;
+  /** Telegram user ID of the owner — messages from this user get is_from_me=true. */
+  private ownerUserId: string | null;
 
   constructor(
     botToken: string,
@@ -67,6 +69,7 @@ export class TelegramChannel implements Channel {
       name?: string;
       allowedJids?: string[];
       excludedJids?: string[];
+      ownerUserId?: string;
     },
   ) {
     this.botToken = botToken;
@@ -74,6 +77,7 @@ export class TelegramChannel implements Channel {
     this.name = options?.name || 'telegram';
     this.allowedJids = new Set(options?.allowedJids || []);
     this.excludedJids = new Set(options?.excludedJids || []);
+    this.ownerUserId = options?.ownerUserId || null;
   }
 
   async connect(): Promise<void> {
@@ -177,7 +181,7 @@ export class TelegramChannel implements Channel {
         sender_name: senderName,
         content,
         timestamp,
-        is_from_me: false,
+        is_from_me: this.ownerUserId !== null && sender === this.ownerUserId,
       });
 
       logger.info(
@@ -209,14 +213,15 @@ export class TelegramChannel implements Channel {
         'telegram',
         isGroup,
       );
+      const sender = ctx.from?.id?.toString() || '';
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
-        sender: ctx.from?.id?.toString() || '',
+        sender,
         sender_name: senderName,
         content: `${placeholder}${caption}`,
         timestamp,
-        is_from_me: false,
+        is_from_me: this.ownerUserId !== null && sender === this.ownerUserId,
       });
     };
 
@@ -283,14 +288,16 @@ export class TelegramChannel implements Channel {
         content = '[Voice message - transcription failed]';
       }
 
+      const voiceSender = ctx.from?.id?.toString() || '';
       this.opts.onMessage(chatJid, {
         id: ctx.message.message_id.toString(),
         chat_jid: chatJid,
-        sender: ctx.from?.id?.toString() || '',
+        sender: voiceSender,
         sender_name: senderName,
         content,
         timestamp,
-        is_from_me: false,
+        is_from_me:
+          this.ownerUserId !== null && voiceSender === this.ownerUserId,
       });
     });
     this.bot.on('message:audio', (ctx) => storeNonText(ctx, '[Audio]'));
@@ -416,10 +423,12 @@ export class TelegramChannel implements Channel {
     sendTyping();
     this.typingIntervals.set(jid, setInterval(sendTyping, 4000));
 
-    // Auto-stop after 30 seconds
+    // Auto-stop after 5 minutes as a safety net.
+    // Typing is actively managed via heartbeat hooks (PreToolUse/PostToolUse/Stop)
+    // which bump or clear the indicator at tool boundaries.
     this.typingTimeouts.set(
       jid,
-      setTimeout(() => this.clearTyping(jid), 30000),
+      setTimeout(() => this.clearTyping(jid), 300000),
     );
   }
 }
@@ -535,6 +544,26 @@ function parseDedicatedBots(
     .filter((b) => b.token && b.jids.length > 0);
 }
 
+/**
+ * Derive the owner's Telegram user ID from registered groups.
+ * The main group in a private Telegram chat has a positive numeric JID (tg:<user_id>).
+ */
+function deriveOwnerUserId(
+  registeredGroups: () => Record<string, RegisteredGroup>,
+): string | null {
+  const groups = registeredGroups();
+  for (const [jid, group] of Object.entries(groups)) {
+    if (!group.isMain || !jid.startsWith('tg:')) continue;
+    const id = jid.slice(3);
+    // Private chats have positive IDs; groups have negative IDs
+    if (id && !id.startsWith('-')) {
+      logger.debug({ ownerUserId: id }, 'Telegram owner user ID derived');
+      return id;
+    }
+  }
+  return null;
+}
+
 registerChannel('telegram', (opts: ChannelOpts) => {
   const envVars = readEnvFile([
     'TELEGRAM_BOT_TOKEN',
@@ -554,8 +583,12 @@ registerChannel('telegram', (opts: ChannelOpts) => {
     '';
   const dedicatedBots = parseDedicatedBots(dedicatedRaw);
   const excludedJids = dedicatedBots.flatMap((b) => b.jids);
+  const ownerUserId = deriveOwnerUserId(opts.registeredGroups);
 
-  return new TelegramChannel(token, opts, { excludedJids });
+  return new TelegramChannel(token, opts, {
+    excludedJids,
+    ownerUserId: ownerUserId || undefined,
+  });
 });
 
 // Register each dedicated bot as a separate channel.
@@ -573,6 +606,7 @@ registerChannel('telegram', (opts: ChannelOpts) => {
       return new TelegramChannel(bot.token, opts, {
         name,
         allowedJids: bot.jids,
+        ownerUserId: deriveOwnerUserId(opts.registeredGroups) || undefined,
       });
     });
   });

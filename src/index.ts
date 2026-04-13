@@ -49,7 +49,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { resolveGroupFolderPath } from './group-folder.js';
+import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { ChannelType } from './text-styles.js';
@@ -306,6 +306,36 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  // Watch the heartbeat file written by container hooks (PreToolUse/PostToolUse/Stop)
+  // to keep the Telegram typing indicator alive for long-running requests.
+  const ipcDir = resolveGroupIpcPath(group.folder);
+  const heartbeatFilename = 'typing_heartbeat';
+  const heartbeatFile = path.join(ipcDir, heartbeatFilename);
+  // Seed the file so fs.watch can attach before the first hook fires
+  try {
+    fs.writeFileSync(heartbeatFile, '');
+  } catch {
+    // Non-fatal: typing will still work via the initial setTyping call
+  }
+  let heartbeatWatcher: ReturnType<typeof fs.watch> | undefined;
+  try {
+    heartbeatWatcher = fs.watch(ipcDir, (event, filename) => {
+      if (filename !== heartbeatFilename) return;
+      try {
+        const content = fs.readFileSync(heartbeatFile, 'utf-8').trim();
+        if (content === 'stopped') {
+          channel.setTyping?.(chatJid, false)?.catch(() => {});
+        } else if (content) {
+          channel.setTyping?.(chatJid, true)?.catch(() => {});
+        }
+      } catch {
+        // File may be briefly unavailable during write; ignore
+      }
+    });
+  } catch (err) {
+    logger.debug({ group: group.name, err }, 'Could not set up typing heartbeat watcher');
+  }
+
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -335,6 +365,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
+  heartbeatWatcher?.close();
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
@@ -528,7 +559,7 @@ async function startMessageLoop(): Promise<void> {
             if (
               isSessionCommandAllowed(
                 isMainGroup,
-                loopCmdMsg.is_from_me === true,
+                !!loopCmdMsg.is_from_me,
               )
             ) {
               queue.closeStdin(chatJid);

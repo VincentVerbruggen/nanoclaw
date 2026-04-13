@@ -39,6 +39,16 @@ describe('extractSessionCommand', () => {
   it('is case-sensitive for the command', () => {
     expect(extractSessionCommand('/Compact', trigger)).toBeNull();
   });
+
+  it('strips Telegram bot username suffix', () => {
+    expect(extractSessionCommand('/compact@MyBot', trigger)).toBe('/compact');
+  });
+
+  it('strips Telegram bot username suffix with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy /compact@MyBot', trigger)).toBe(
+      '/compact',
+    );
+  });
 });
 
 describe('isSessionCommandAllowed', () => {

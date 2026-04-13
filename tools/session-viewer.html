@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NanoClaw Session Viewer</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #0f0f0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #222;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: #111;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+
+    header h1 {
+      font-size: 15px;
+      font-weight: 600;
+      color: #fff;
+      flex: 1;
+    }
+
+    #file-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #aaa;
+      transition: border-color 0.15s;
+    }
+    #file-label:hover { border-color: #555; color: #ddd; }
+    #file-input { display: none; }
+
+    #session-meta {
+      font-size: 12px;
+      color: #555;
+    }
+
+    #refresh-btn {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #aaa;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #refresh-btn:hover { border-color: #555; color: #ddd; }
+    #refresh-btn.spinning span { display: inline-block; animation: spin 0.5s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    #order-btn {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      background: #1e1e1e;
+      border: 1px solid #333;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      color: #aaa;
+      transition: border-color 0.15s, color 0.15s;
+    }
+    #order-btn:hover { border-color: #555; color: #ddd; }
+    #order-btn.active { border-color: #444; color: #d4a800; }
+
+    #drop-zone {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      height: calc(100vh - 57px);
+      color: #444;
+      text-align: center;
+    }
+    #drop-zone .icon { font-size: 48px; }
+    #drop-zone p { font-size: 14px; }
+    #drop-zone.drag-over { background: #151515; }
+
+    #conversation {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 24px 16px 80px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .entry {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    /* USER */
+    .msg-user {
+      align-self: flex-end;
+      max-width: 75%;
+      background: #1a3a5c;
+      border: 1px solid #1e4a78;
+      border-radius: 12px 12px 2px 12px;
+      padding: 10px 14px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* ASSISTANT TEXT */
+    .msg-assistant {
+      align-self: flex-start;
+      max-width: 80%;
+      background: #1a1a1a;
+      border: 1px solid #2a2a2a;
+      border-radius: 2px 12px 12px 12px;
+      padding: 10px 14px;
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* TOOL CALL */
+    .tool-call {
+      align-self: flex-start;
+      max-width: 80%;
+      border: 1px solid #3a2e00;
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+    .tool-call-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      background: #211d00;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tool-call-header:hover { background: #2a2500; }
+    .tool-name {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      color: #d4a800;
+      font-weight: 600;
+    }
+    .tool-icon { font-size: 13px; }
+    .expand-arrow {
+      margin-left: auto;
+      font-size: 10px;
+      color: #555;
+      transition: transform 0.15s;
+    }
+    .tool-call.open .expand-arrow { transform: rotate(180deg); }
+    .tool-call-body {
+      display: none;
+      padding: 10px 12px;
+      background: #161400;
+      border-top: 1px solid #3a2e00;
+    }
+    .tool-call.open .tool-call-body { display: block; }
+    .tool-call-body pre {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      color: #bbb;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* TOOL RESULT */
+    .tool-result {
+      align-self: flex-start;
+      max-width: 80%;
+      border: 1px solid #1e2d1e;
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 13px;
+    }
+    .tool-result-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 12px;
+      background: #101a10;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tool-result-header:hover { background: #141f14; }
+    .result-label {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      color: #4a9a4a;
+      font-weight: 600;
+    }
+    .result-preview {
+      font-size: 11px;
+      color: #4a6a4a;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .tool-result-body {
+      display: none;
+      padding: 10px 12px;
+      background: #0a120a;
+      border-top: 1px solid #1e2d1e;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    .tool-result.open .tool-result-body { display: block; }
+    .tool-result.open .expand-arrow { transform: rotate(180deg); }
+    .tool-result-body pre {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 11px;
+      color: #7ab87a;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .ts {
+      font-size: 10px;
+      color: #555;
+      padding: 0 4px;
+      align-self: flex-end;
+    }
+    .ts.left { align-self: flex-start; }
+
+    .spacer { height: 8px; }
+
+    /* SEND MESSAGE — actual outgoing Telegram message */
+    .msg-send {
+      align-self: flex-end;
+      max-width: 75%;
+      background: #0d2d1a;
+      border: 1px solid #1a5c35;
+      border-radius: 12px 12px 2px 12px;
+      padding: 10px 14px;
+      font-size: 14px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+    .msg-send .send-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: #2ea84e;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .msg-send p { margin: 0 0 4px; }
+    .msg-send b { color: #e8e8e8; }
+    .msg-send i { color: #bbb; }
+    .msg-send s { color: #777; }
+    .msg-send code {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      background: #0a1f11;
+      padding: 1px 4px;
+      border-radius: 3px;
+      color: #7ecf9a;
+    }
+
+    /* Token counter */
+    .token-count {
+      font-size: 10px;
+      color: #555;
+      padding: 0 4px;
+      align-self: flex-start;
+    }
+
+    /* Thinking blocks */
+    .msg-thinking {
+      align-self: flex-start;
+      max-width: 80%;
+      background: #141414;
+      border: 1px solid #222;
+      border-left: 3px solid #333;
+      border-radius: 0 8px 8px 0;
+      padding: 8px 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: #666;
+      font-style: italic;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Session Viewer</h1>
+  <span id="session-meta"></span>
+  <button id="order-btn" title="Toggle order">↕ Newest first</button>
+  <button id="refresh-btn" title="Reload file (R)"><span>↻</span> Refresh</button>
+  <label id="file-label">
+    <span>📂</span> Open .jsonl
+  </label>
+</header>
+
+<div id="drop-zone">
+  <div class="icon">💬</div>
+  <p>Drop a <strong>.jsonl</strong> session file here,<br>or click <em>Open .jsonl</em> above</p>
+  <p style="font-size:12px; margin-top:4px; color:#333">Sessions are in<br><code style="color:#444">data/sessions/&lt;group&gt;/.claude/projects/…</code></p>
+</div>
+
+<div id="conversation" style="display:none"></div>
+
+<script>
+const dropZone   = document.getElementById('drop-zone');
+const convEl     = document.getElementById('conversation');
+const metaEl     = document.getElementById('session-meta');
+const refreshBtn = document.getElementById('refresh-btn');
+
+let fileHandle  = null; // FileSystemFileHandle — lets us re-read from disk
+let currentName = null;
+let newestFirst = false;
+
+document.getElementById('file-label').addEventListener('click', async () => {
+  try {
+    [fileHandle] = await showOpenFilePicker({
+      types: [{ description: 'Session files', accept: { 'application/octet-stream': ['.jsonl'] } }],
+      multiple: false,
+    });
+    await reloadFromHandle();
+  } catch (e) {
+    if (e.name !== 'AbortError') console.error(e);
+  }
+});
+
+document.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) dropZone.classList.remove('drag-over'); });
+document.addEventListener('drop', async e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  // Prefer FileSystemFileHandle (gives us live re-read on refresh)
+  const item = e.dataTransfer.items?.[0];
+  if (item?.getAsFileSystemHandle) {
+    const h = await item.getAsFileSystemHandle();
+    if (h?.kind === 'file') { fileHandle = h; await reloadFromHandle(); return; }
+  }
+  // Fallback: plain File — refresh won't get new content but at least it renders
+  const file = e.dataTransfer.files[0];
+  if (file) { fileHandle = null; currentName = file.name; showButtons(); render(file.name, await file.text()); }
+});
+
+refreshBtn.addEventListener('click', async () => {
+  if (!fileHandle) return;
+  refreshBtn.classList.add('spinning');
+  await reloadFromHandle();
+  refreshBtn.classList.remove('spinning');
+});
+
+// Keyboard shortcut: R to refresh
+document.addEventListener('keydown', e => {
+  if (e.key === 'r' && !e.metaKey && !e.ctrlKey && document.activeElement.tagName !== 'INPUT') {
+    refreshBtn.click();
+  }
+});
+
+const orderBtn = document.getElementById('order-btn');
+orderBtn.addEventListener('click', async () => {
+  newestFirst = !newestFirst;
+  orderBtn.classList.toggle('active', newestFirst);
+  orderBtn.textContent = newestFirst ? '↕ Oldest first' : '↕ Newest first';
+  if (fileHandle) await reloadFromHandle();
+});
+
+async function reloadFromHandle() {
+  const file = await fileHandle.getFile(); // fresh read from disk every time
+  currentName = file.name;
+  showButtons();
+  render(file.name, await file.text());
+}
+
+function showButtons() {
+  refreshBtn.style.display = 'inline-flex';
+  orderBtn.style.display   = 'inline-flex';
+}
+
+function parseJSONL(text) {
+  return text.split('\n')
+    .filter(l => l.trim())
+    .map(l => { try { return JSON.parse(l); } catch { return null; } })
+    .filter(Boolean);
+}
+
+// Group streaming assistant chunks (same message.id) into single entries
+function groupEntries(raw) {
+  const groups = [];
+  const msgIdMap = new Map(); // message.id -> group index
+
+  for (const entry of raw) {
+    const msgId = entry.message?.id;
+    const blocks = Array.isArray(entry.message?.content)
+      ? entry.message.content
+      : (typeof entry.message?.content === 'string'
+          ? [{ type: 'text', text: entry.message.content }]
+          : []);
+
+    if (entry.type === 'assistant' && msgId && msgIdMap.has(msgId)) {
+      const g = groups[msgIdMap.get(msgId)];
+      g.blocks.push(...blocks);
+      // Keep the latest usage (last chunk has final output_tokens)
+      if (entry.message?.usage) g.usage = entry.message.usage;
+    } else {
+      const g = {
+        role: entry.type === 'assistant' ? 'assistant' : 'user',
+        blocks,
+        timestamp: entry.timestamp,
+        usage: entry.message?.usage || null,
+      };
+      if (entry.type === 'assistant' && msgId) msgIdMap.set(msgId, groups.length);
+      groups.push(g);
+    }
+  }
+  return groups;
+}
+
+function render(filename, text) {
+  const raw = parseJSONL(text);
+  const groups = groupEntries(raw);
+
+  // Meta
+  const sessionId = raw[0]?.sessionId || '';
+  metaEl.textContent = `${filename}${sessionId ? '  ·  ' + sessionId.slice(0, 8) + '…' : ''}`;
+
+  dropZone.style.display = 'none';
+  convEl.style.display = 'flex';
+  convEl.innerHTML = '';
+
+  if (newestFirst) groups.reverse();
+
+  for (const g of groups) {
+    const entry = document.createElement('div');
+    entry.className = 'entry';
+
+    if (g.role === 'user') {
+      renderUserEntry(entry, g);
+    } else {
+      renderAssistantEntry(entry, g);
+    }
+
+    convEl.appendChild(entry);
+
+    // Spacer between turns
+    const spacer = document.createElement('div');
+    spacer.className = 'spacer';
+    convEl.appendChild(spacer);
+  }
+}
+
+function renderUserEntry(entry, g) {
+  // Separate plain text blocks from tool_result blocks
+  const textBlocks = g.blocks.filter(b => b.type === 'text');
+  const resultBlocks = g.blocks.filter(b => b.type === 'tool_result');
+
+  for (const b of textBlocks) {
+    if (!b.text?.trim()) continue;
+    const el = document.createElement('div');
+    el.className = 'msg-user';
+    el.textContent = b.text;
+    entry.appendChild(el);
+  }
+
+  for (const b of resultBlocks) {
+    entry.appendChild(makeToolResult(b));
+  }
+
+  if (g.timestamp) {
+    const ts = document.createElement('div');
+    ts.className = 'ts';
+    ts.textContent = formatTs(g.timestamp);
+    entry.appendChild(ts);
+  }
+}
+
+function renderAssistantEntry(entry, g) {
+  // Collect consecutive text into one bubble, tool_use as separate cards
+  let textBuffer = [];
+
+  const flush = () => {
+    const combined = textBuffer.join('').trim();
+    if (combined) {
+      const el = document.createElement('div');
+      el.className = 'msg-assistant';
+      el.textContent = combined;
+      entry.appendChild(el);
+    }
+    textBuffer = [];
+  };
+
+  for (const b of g.blocks) {
+    if (b.type === 'text') {
+      textBuffer.push(b.text || '');
+    } else if (b.type === 'thinking') {
+      flush();
+      const el = document.createElement('div');
+      el.className = 'msg-thinking';
+      el.textContent = b.thinking || '';
+      entry.appendChild(el);
+    } else if (b.type === 'tool_use') {
+      flush();
+      entry.appendChild(b.name === 'mcp__nanoclaw__send_message'
+        ? makeSendMessage(b)
+        : makeToolCall(b));
+    }
+  }
+  flush();
+
+  // Token count + timestamp row
+  const meta = document.createElement('div');
+  meta.style.cssText = 'display:flex;gap:10px;align-items:center;padding:0 4px';
+  if (g.usage) {
+    const total = (g.usage.input_tokens || 0)
+      + (g.usage.cache_read_input_tokens || 0)
+      + (g.usage.cache_creation_input_tokens || 0);
+    const tc = document.createElement('span');
+    tc.className = 'token-count';
+    tc.textContent = `~${fmtTokens(total)} ctx`;
+    meta.appendChild(tc);
+  }
+  if (g.timestamp) {
+    const ts = document.createElement('span');
+    ts.className = 'ts left';
+    ts.style.padding = '0';
+    ts.textContent = formatTs(g.timestamp);
+    meta.appendChild(ts);
+  }
+  if (meta.children.length) entry.appendChild(meta);
+}
+
+function makeSendMessage(block) {
+  const text = block.input?.text || '';
+  const wrap = document.createElement('div');
+  wrap.className = 'msg-send';
+  const label = document.createElement('div');
+  label.className = 'send-label';
+  label.textContent = '📤 SENT TO USER';
+  wrap.appendChild(label);
+  const body = document.createElement('div');
+  body.innerHTML = renderTelegramMd(text);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+// Minimal Telegram markdown → HTML (bold, italic, strikethrough, code, newlines)
+function renderTelegramMd(text) {
+  return escHtml(text)
+    .replace(/\*(.*?)\*/g, '<b>$1</b>')
+    .replace(/_(.*?)_/g, '<i>$1</i>')
+    .replace(/~(.*?)~/g, '<s>$1</s>')
+    .replace(/`(.*?)`/g, '<code>$1</code>')
+    .replace(/\n/g, '<br>');
+}
+
+function fmtTokens(n) {
+  if (n >= 1000) return (n / 1000).toFixed(0) + 'k';
+  return String(n);
+}
+
+function makeToolCall(block) {
+  const wrap = document.createElement('div');
+  wrap.className = 'tool-call';
+
+  const header = document.createElement('div');
+  header.className = 'tool-call-header';
+  header.innerHTML = `
+    <span class="tool-icon">🔧</span>
+    <span class="tool-name">${escHtml(block.name || '')}</span>
+    <span class="expand-arrow">▼</span>
+  `;
+  header.addEventListener('click', () => wrap.classList.toggle('open'));
+
+  const body = document.createElement('div');
+  body.className = 'tool-call-body';
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(block.input || {}, null, 2);
+  body.appendChild(pre);
+
+  wrap.appendChild(header);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function makeToolResult(block) {
+  const content = block.content;
+  const text = Array.isArray(content)
+    ? content.map(c => c.text || JSON.stringify(c)).join('\n')
+    : (typeof content === 'string' ? content : JSON.stringify(content));
+
+  const preview = text.slice(0, 80).replace(/\n/g, ' ');
+
+  const wrap = document.createElement('div');
+  wrap.className = 'tool-result';
+
+  const header = document.createElement('div');
+  header.className = 'tool-result-header';
+  header.innerHTML = `
+    <span class="tool-icon">✅</span>
+    <span class="result-label">Result</span>
+    <span class="result-preview">${escHtml(preview)}${text.length > 80 ? '…' : ''}</span>
+    <span class="expand-arrow">▼</span>
+  `;
+  header.addEventListener('click', () => wrap.classList.toggle('open'));
+
+  const body = document.createElement('div');
+  body.className = 'tool-result-body';
+  const pre = document.createElement('pre');
+  pre.textContent = text;
+  body.appendChild(pre);
+
+  wrap.appendChild(header);
+  wrap.appendChild(body);
+  return wrap;
+}
+
+function formatTs(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+</body>
+</html>

@@ -1,3 +1,29 @@
 {
-  "mcpServers": {}
+  "mcpServers": {
+    "cli-microsoft-365": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@pnp/cli-microsoft365-mcp-server@latest"
+      ]
+    },
+    "atlassian": {
+      "type": "stdio",
+      "command": "/opt/homebrew/bin/uvx",
+      "args": [
+        "--from",
+        "mcp-atlassian==0.14.2",
+        "mcp-atlassian"
+      ],
+      "env": {
+        "JIRA_URL": "https://strixi.atlassian.net",
+        "JIRA_USERNAME": "${JIRA_EMAIL}",
+        "JIRA_API_TOKEN": "${JIRA_API_TOKEN}",
+        "CONFLUENCE_URL": "https://strixi.atlassian.net/wiki",
+        "CONFLUENCE_USERNAME": "${JIRA_EMAIL}",
+        "CONFLUENCE_API_TOKEN": "${JIRA_API_TOKEN}"
+      }
+    }
+  }
 }
